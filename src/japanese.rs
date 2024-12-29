@@ -1,4 +1,14 @@
-pub fn menu() {
+use std::borrow::Cow;
+use espflash::connection::Port;
+use espflash::connection::reset::{ResetAfterOperation, ResetBeforeOperation};
+use espflash::elf::RomSegment;
+use espflash::flasher::Flasher;
+use espflash::targets::Chip;
+use espflash::targets::Chip::Esp32c6;
+use serde::Deserialize;
+use serialport::{COMPort, SerialPortBuilder, SerialPortInfo, SerialPortType, UsbPortInfo};
+
+pub fn menu() -> Result<(), Box<dyn std::error::Error>> {
     println!("こんにちは！");
     println!("おかゆグループ地震計プロジェクトに興味を持っていただきありがとうございます。");
 
@@ -16,7 +26,8 @@ pub fn menu() {
         let choice = choice.trim();
         match choice {
             "1" => about(),
-            "2" => install(),
+            "2" =>
+                tokio::runtime::Runtime::new().unwrap().block_on(install())?,
             "3" => update(),
             "4" => settings(),
             "5" => reset(),
@@ -25,6 +36,7 @@ pub fn menu() {
         }
     }
     println!("さようなら！");
+    Ok(())
 }
 
 fn about() {
@@ -44,13 +56,26 @@ fn about() {
     std::thread::sleep(std::time::Duration::from_millis(500));
 }
 
-fn install() {
+#[derive(Deserialize, Debug)]
+struct Firmware {
+    version: String,
+    url: String,
+    name: String,
+}
+
+#[derive(Deserialize, Debug)]
+struct Devices {
+    devices: Vec<Firmware>,
+    last_updated: String,
+}
+
+async fn install() -> Result<(), Box<dyn std::error::Error>> {
     println!("ファームウェアのインストールには、インターネット接続が必要です。");
 
     println!("まず、マイコンをPCに接続してください。");
     println!("接続できましたか？ (y/n)");
     let mut connected = String::new();
-    std::io::stdin().read_line(&mut connected).unwrap();
+    std::io::stdin().read_line(&mut connected)?;
     let connected = connected.trim();
 
     if connected == "n" {
@@ -66,7 +91,7 @@ fn install() {
             println!("理由がわからない場合は、公式ウェブサイトのドキュメントをご覧ください。");
             println!("https://ogsp.okayugroup.com/");
         }
-        return
+        return Ok(());
     }
 
     println!("環境を確認しています...");
@@ -90,38 +115,103 @@ fn install() {
                 println!("インターネット接続に失敗しました。");
                 println!("インターネット接続ができない場合は、接続先のサーバーの状態を確認してください。");
             }
-            return
+            return Ok(());
         }
     }
 
     // マイコンデバイスを確認
     let devices = serialport::available_ports().expect("デバイスの取得に失敗しました。");
-    if devices.len() == 0 {
+
+    let len = devices.len();
+
+    if len == 0 {
         println!("デバイスが見つかりませんでした。");
         println!("デバイスが見つからない場合は、ドライバーのインストールが必要かもしれません。");
         println!("ドライバーのインストール方法は、公式ウェブサイトのドキュメントをご覧ください。");
         println!("https://ogsp.okayugroup.com/");
-        return
+        return Ok(());
     }
-
-    for port in devices {
-        match port.port_type {
-            serialport::SerialPortType::UsbPort(info) => {
-                println!("Port: {:?}", port.port_name);
-                println!("  VID: {:04x}", info.vid);
-                println!("  PID: {:04x}", info.pid);
-                println!("  Manufacturer: {:?}", info.manufacturer);
-                println!("  Serial Number: {:?}", info.serial_number);
-            }
-            _ => println!("Port: {:?} is not a USB port", port.port_name),
+    let mut selected_device : SerialPortInfo;
+    if len > 1 {
+        println!("複数のデバイスが見つかりました。");
+        println!("どのデバイスを使用しますか？");
+        for (i, device) in devices.iter().enumerate() {
+            println!("{}: {}", i + 1, device.port_name);
         }
+        let mut choice = String::new();
+        std::io::stdin().read_line(&mut choice)?;
+        let choice = choice.trim().parse::<usize>()?;
+        selected_device = devices[choice - 1].clone();
+    } else {
+        selected_device = devices[0].clone();
     }
 
-    // todo ESP32を探す
+    let mut usb_port_info: Option<UsbPortInfo> = None;
+    match selected_device.clone().port_type {
+        SerialPortType::UsbPort(info) => {
+            usb_port_info = Some(info);
+        }
+        _ => {}
+    }
 
-    // todo ファームウェアのダウンロード
+    if usb_port_info.is_none() {
+        println!("デバイスは検知されましたが、USBデバイスではありません。");
+        println!("USBデバイスを使用してください。");
+        return Ok(());
+    }
 
-    // todo ファームウェアの書き込み
+    println!("デバイス: {}", selected_device.port_name);
+
+
+    println!("ファームウェアが対応しているデバイスのリストを取得しています...");
+
+    let client = reqwest::Client::new();
+    let res = client.get("https://api.okayugroup.com/ogsp/firmware/devices.json")
+        .send()
+        .await?;
+
+    let body = res.text().await?;
+    let devices: Devices = serde_json::from_str(&body).expect("デバイスのリストの取得に失敗しました。");
+    println!("デバイスのリストを取得しました。");
+
+    println!("インストールするデバイスを選択してください。");
+    for (i, device) in devices.devices.iter().enumerate() {
+        println!("{}: {}", i + 1, device.name);
+    }
+
+    let mut choice = String::new();
+    std::io::stdin().read_line(&mut choice)?;
+    let choice = choice.trim().parse::<usize>()?;
+    let device = &devices.devices[choice - 1];
+
+    println!("ファームウェア: {}", device.name);
+
+    println!("ファームウェアをダウンロードしています...");
+
+    let url = &device.url.replace("<version>", &device.version);  // versionをlatestに置換
+    println!("URL: {}", url);
+    let res = client.get(url)
+        .send().await.expect("ファームウェアのダウンロードに失敗しました。");
+
+    let bytes = res.bytes().await?;
+    let bytes_array: Vec<u8> = bytes.to_vec();
+
+    println!("ファームウェアをダウンロードしました。");
+
+    // ファームウェアの書き込み
+    println!("ファームウェアを書き込んでいます...");
+    let serial = serialport::new(&selected_device.port_name, 115200).timeout(std::time::Duration::from_secs(1));
+    let com = COMPort::open(&serial)?;
+    let mut flasher = Flasher::connect(com, usb_port_info.unwrap(), None, false, false, false, Some(Esp32c6), ResetAfterOperation::HardReset, ResetBeforeOperation::DefaultReset)?;
+    let rom = RomSegment {
+        addr: 0,
+        data: Cow::from(bytes_array),
+    };
+    flasher.write_bins_to_flash(&[rom], None)?;
+
+    println!("ファームウェアの書き込みが完了しました。");
+
+    Ok(())
 
 }
 

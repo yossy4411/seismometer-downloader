@@ -1,7 +1,7 @@
 mod japanese;
 mod english;
 
-fn main() {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Select language: ");
     println!("1. English");
     println!("2. 日本語");
@@ -11,8 +11,11 @@ fn main() {
     let language = language.trim();
 
     match language {
-        "1" => english::menu(),
+        "1" => Ok(english::menu()),
         "2" => japanese::menu(),
-        _ => println!("Invalid selection"),
+        _ => {
+            println!("Invalid selection");
+            Ok(())
+        }
     }
 }

@@ -5,4 +5,8 @@ edition = "2021"
 
 [dependencies]
 espflash = "3.2.0"
-serialport = "4.0.1"
+serialport = "4.6.0"
+reqwest = "0.12.9"
+serde_json = "1.0.133"
+serde = { version = "1.0.215", features = ["derive"] }
+tokio = { version = "1.16.1", features = ["full"] }
