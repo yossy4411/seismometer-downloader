@@ -1,12 +1,12 @@
-use std::borrow::Cow;
-use espflash::connection::Port;
 use espflash::connection::reset::{ResetAfterOperation, ResetBeforeOperation};
 use espflash::elf::RomSegment;
 use espflash::flasher::Flasher;
-use espflash::targets::Chip;
 use espflash::targets::Chip::Esp32c6;
+use reqwest::Url;
 use serde::Deserialize;
-use serialport::{COMPort, SerialPortBuilder, SerialPortInfo, SerialPortType, UsbPortInfo};
+use serialport::{COMPort, SerialPortInfo, SerialPortType, UsbPortInfo};
+use std::borrow::Cow;
+use std::collections::BTreeMap;
 
 pub fn menu() -> Result<(), Box<dyn std::error::Error>> {
     println!("こんにちは！");
@@ -58,16 +58,40 @@ fn about() {
 
 #[derive(Deserialize, Debug)]
 struct Firmware {
-    version: String,
-    url: String,
+    offset: u32,
+    url: String
+}
+
+#[derive(Deserialize, Debug)]
+struct FirmwareVersion {
+    files: Vec<Firmware>
+}
+
+#[derive(Deserialize, Debug)]
+struct FirmwareDevice {
+    versions: BTreeMap<String, FirmwareVersion>,
+    latest: String,
     name: String,
 }
 
 #[derive(Deserialize, Debug)]
 struct Devices {
-    devices: Vec<Firmware>,
+    devices: Vec<FirmwareDevice>,
     last_updated: String,
 }
+
+async fn download_firmware<'a>(firmware: &Firmware) -> Cow<'a, [u8]> {
+    let url = Url::parse(&firmware.url).expect("URLのパースに失敗しました。");
+    let client = reqwest::Client::new();
+    let res = client.get(url)
+        .send().await.expect("ファームウェアのダウンロードに失敗しました.");
+
+    let bytes = res.bytes().await.expect("ファームウェアのダウンロードに失敗しました.");
+    let bytes_array: Vec<u8> = bytes.to_vec();
+
+    Cow::from(bytes_array)
+}
+
 
 async fn install() -> Result<(), Box<dyn std::error::Error>> {
     println!("ファームウェアのインストールには、インターネット接続が必要です。");
@@ -184,17 +208,37 @@ async fn install() -> Result<(), Box<dyn std::error::Error>> {
     let choice = choice.trim().parse::<usize>()?;
     let device = &devices.devices[choice - 1];
 
-    println!("ファームウェア: {}", device.name);
+    println!("デバイス: {}", device.name);
+    let mut version = &device.latest;
+    println!("バージョン v{} をダウンロードします。", version);
+    println!("続行する場合はEnterキーを、他のバージョンを選択する場合はそれ以外のキーを入力してください。");
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input)?;
+    if input.trim() != "" {
+        println!("バージョンを選択してください。");
+        for (i, version) in device.versions.keys().enumerate() {
+            println!("{}: {}", i + 1, version);
+        }
+        let mut choice = String::new();
+        std::io::stdin().read_line(&mut choice)?;
+        let choice = choice.trim().parse::<usize>()?;
+        version = &device.versions.keys().collect::<Vec<&String>>()[choice - 1];
+        println!("バージョン: {}", version);
+    }
 
     println!("ファームウェアをダウンロードしています...");
 
-    let url = &device.url.replace("<version>", &device.version);  // versionをlatestに置換
-    println!("URL: {}", url);
-    let res = client.get(url)
-        .send().await.expect("ファームウェアのダウンロードに失敗しました。");
-
-    let bytes = res.bytes().await?;
-    let bytes_array: Vec<u8> = bytes.to_vec();
+    let firmware_version = &device.versions.get(version).expect("バージョンが見つかりませんでした。");
+    let mut files: Vec<RomSegment> = Vec::new();
+    for (i, file) in firmware_version.files.iter().enumerate() {
+        println!("ダウンロード中...{}/{}", i + 1, firmware_version.files.len());
+        let bytes = download_firmware(file).await;
+        let rom = RomSegment {
+            addr: file.offset,
+            data: bytes,
+        };
+        files.push(rom);
+    }
 
     println!("ファームウェアをダウンロードしました。");
 
@@ -202,12 +246,8 @@ async fn install() -> Result<(), Box<dyn std::error::Error>> {
     println!("ファームウェアを書き込んでいます...");
     let serial = serialport::new(&selected_device.port_name, 115200).timeout(std::time::Duration::from_secs(1));
     let com = COMPort::open(&serial)?;
-    let mut flasher = Flasher::connect(com, usb_port_info.unwrap(), None, false, false, false, Some(Esp32c6), ResetAfterOperation::HardReset, ResetBeforeOperation::DefaultReset)?;
-    let rom = RomSegment {
-        addr: 0,
-        data: Cow::from(bytes_array),
-    };
-    flasher.write_bins_to_flash(&[rom], None)?;
+    let mut flasher = Flasher::connect(com, usb_port_info.unwrap(), None, false, false, false, Some(Esp32c6), ResetAfterOperation::NoReset, ResetBeforeOperation::DefaultReset)?;
+    flasher.write_bins_to_flash(&files, None)?;
 
     println!("ファームウェアの書き込みが完了しました。");
 
