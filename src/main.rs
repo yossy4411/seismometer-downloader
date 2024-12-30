@@ -1,7 +1,14 @@
 mod japanese;
 mod english;
+mod gui;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let gui_result = gui::loader::run();
+    if gui_result.is_ok() {
+        return Ok(());
+    }
+    println!("Sorry, GUI failed to load. Now running CLI.");
+    println!("Caution: CLI is not fully implemented yet.");
     println!("Select language: ");
     println!("1. English");
     println!("2. 日本語");

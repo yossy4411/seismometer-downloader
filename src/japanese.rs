@@ -4,9 +4,15 @@ use espflash::flasher::Flasher;
 use espflash::targets::Chip::Esp32c6;
 use reqwest::Url;
 use serde::Deserialize;
-use serialport::{COMPort, SerialPortInfo, SerialPortType, UsbPortInfo};
+use serialport::{SerialPortInfo, SerialPortType, UsbPortInfo};
 use std::borrow::Cow;
 use std::collections::BTreeMap;
+use std::error::Error;
+
+#[cfg(unix)]
+use serialport::TTYPort;
+#[cfg(windows)]
+use serialport::COMPort;
 
 pub fn menu() -> Result<(), Box<dyn std::error::Error>> {
     println!("こんにちは！");
@@ -77,7 +83,7 @@ struct FirmwareDevice {
 #[derive(Deserialize, Debug)]
 struct Devices {
     devices: Vec<FirmwareDevice>,
-    last_updated: String,
+    // last_updated: String,
 }
 
 async fn download_firmware<'a>(firmware: &Firmware) -> Cow<'a, [u8]> {
@@ -155,7 +161,7 @@ async fn install() -> Result<(), Box<dyn std::error::Error>> {
         println!("https://ogsp.okayugroup.com/");
         return Ok(());
     }
-    let mut selected_device : SerialPortInfo;
+    let selected_device : SerialPortInfo;
     if len > 1 {
         println!("複数のデバイスが見つかりました。");
         println!("どのデバイスを使用しますか？");
@@ -244,15 +250,28 @@ async fn install() -> Result<(), Box<dyn std::error::Error>> {
 
     // ファームウェアの書き込み
     println!("ファームウェアを書き込んでいます...");
-    let serial = serialport::new(&selected_device.port_name, 115200).timeout(std::time::Duration::from_secs(1));
-    let com = COMPort::open(&serial)?;
-    let mut flasher = Flasher::connect(com, usb_port_info.unwrap(), None, false, false, false, Some(Esp32c6), ResetAfterOperation::NoReset, ResetBeforeOperation::DefaultReset)?;
+    let port = open_port(&selected_device)?;
+    let mut flasher = Flasher::connect(port, usb_port_info.unwrap(), None, false, false, false, Some(Esp32c6), ResetAfterOperation::NoReset, ResetBeforeOperation::DefaultReset)?;
     flasher.write_bins_to_flash(&files, None)?;
 
     println!("ファームウェアの書き込みが完了しました。");
 
     Ok(())
 
+}
+
+#[cfg(unix)]
+fn open_port(selected_device: &SerialPortInfo) -> Result<TTYPort, Box<dyn Error>> {
+    let serial = serialport::new(&selected_device.port_name, 115200).timeout(std::time::Duration::from_secs(1));
+    let port = TTYPort::open(&serial)?;
+    Ok(port)
+}
+
+#[cfg(windows)]
+fn open_port(selected_device: &SerialPortInfo) -> Result<TTYPort, Box<dyn Error>> {
+    let serial = serialport::new(&selected_device.port_name, 115200).timeout(std::time::Duration::from_secs(1));
+    let port = COMPort::open(&serial)?;
+    Ok(port)
 }
 
 
