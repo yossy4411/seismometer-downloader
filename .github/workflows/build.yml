@@ -21,18 +21,7 @@ jobs:
         run: rustup target add aarch64-unknown-linux-gnu  # ARM64ターゲットを追加
 
       - name: Install cross-compilation dependencies
-        run: sudo apt-get install -y gcc-aarch64-linux-gnu
-
-      - name: Install OpenSSL from source
-        run: |
-          # 必要なパッケージをインストール
-          sudo apt-get install -y build-essential checkinstall zlib1g-dev
-          curl -O -L https://www.openssl.org/source/openssl-1.1.1u.tar.gz
-          tar -xzf openssl-1.1.1u.tar.gz
-          cd openssl-1.1.1u
-          ./config --prefix=/usr/local/ssl --openssldir=/usr/local/ssl
-          make
-          sudo make install
+        run: sudo apt-get install -y gcc-aarch64-linux-gnu libssl-dev
 
       - name: Build for ARM64
         run: cargo build --target aarch64-unknown-linux-gnu  # ARM64用にビルド
